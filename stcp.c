@@ -44,7 +44,9 @@ unsigned int hostname_to_ipaddr(const char *s) {
  * 'r'eceived packet
  */
 void dump(char dir, void *pkt, int len) {
+    printf("dump() called\n");
     tcpheader *stcpHeader = (tcpheader *) pkt;
+     printf("dump(): %c %s payload %lu bytes\n", dir, tcpHdrToString(stcpHeader), len - sizeof(tcpheader));
     logLog("packet", "%c %s payload %d bytes", dir, tcpHdrToString(stcpHeader), len - sizeof(tcpheader));
     fflush(stdout);
 }
@@ -84,6 +86,11 @@ void createSegment(packet *pkt, int flags, unsigned short rwnd, unsigned int seq
     hdr->windowSize = rwnd;
     hdr->flags = (5 << 12) | flags;
     hdr->checksum = 0;
+}
+
+void createDataSegment(packet *pkt, int flags, unsigned short rwnd, unsigned int seq, unsigned int ack, unsigned char *data, int len) {
+    createSegment(pkt, flags, rwnd, seq, ack, data, len);
+    memcpy(pkt->data+sizeof(tcpheader), data, len);
 }
 
 /*

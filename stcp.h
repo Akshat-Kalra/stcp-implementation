@@ -57,6 +57,7 @@ static inline void initPacket(packet *pkt, unsigned char *data, int len) {
 /* Declarations for STCP.C */
 
 extern void createSegment(packet *pkt, int flags, unsigned short rwnd, unsigned int seq, unsigned int ack, unsigned char *data, int len);
+void createDataSegment(packet *pkt, int flags, unsigned short rwnd, unsigned int seq, unsigned int ack, unsigned char *data, int len);
 extern void dump(char dir, void* pkt, int len);
 extern unsigned int hostname_to_ipaddr(const char *s);
 extern int readWithTimeout(int fd, unsigned char *pkt, int ms);

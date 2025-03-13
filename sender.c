@@ -35,13 +35,9 @@ typedef struct {
     int fd;
     int state;
     unsigned int isn;
-    // unsigned int next_seq_num;
-    // unsigned int last_ack_num;
+    unsigned int next_seq_num;
+    unsigned int last_ack_num;
     unsigned short window_size;
-
-    
-
-
 
 } stcp_send_ctrl_blk;
 /* ADD ANY EXTRA FUNCTIONS HERE */
@@ -65,37 +61,43 @@ int stcp_send(stcp_send_ctrl_blk *stcp_CB, unsigned char* data, int length) {
 
     /* YOUR CODE HERE */
     int bytes_sent = 0;
-    int window_size = stcp_CB->window_size;
+    // int window_size = stcp_CB->window_size;
     int unacked_bytes = 0;
-    int next_seq_num = stcp_CB->isn + 1;
+    stcp_CB->next_seq_num = stcp_CB->isn + 1;
 
     while (bytes_sent < length || unacked_bytes > 0) {
 
-        while (bytes_sent < length && unacked_bytes < window_size) {
-            int chunk_size = min(STCP_MSS, window_size - unacked_bytes);
+
+        while (bytes_sent < length && unacked_bytes < stcp_CB->window_size) {
+            int chunk_size = min(STCP_MSS, stcp_CB->window_size - unacked_bytes);
             packet data_packet;
+            initPacket(&data_packet, NULL, STCP_MTU);
+            createDataSegment(&data_packet, ACK, stcp_CB->window_size, stcp_CB->next_seq_num, 0, data + bytes_sent, chunk_size);
             htonHdr(data_packet.hdr);
-            createSegment(&data_packet, ACK, window_size, next_seq_num, 0, data + bytes_sent, chunk_size);
             data_packet.hdr->checksum = ipchecksum(data_packet.data, sizeof(tcpheader) + chunk_size);
             logLog("segment", "Sending data packet");
-            dump('s', data, length);
+            dump('s', data_packet.data, data_packet.len);
             send(stcp_CB->fd, data_packet.data, data_packet.len, 0);
             bytes_sent += chunk_size;
-            next_seq_num += chunk_size;
+            stcp_CB->next_seq_num += chunk_size;
             unacked_bytes += chunk_size;
         }
 
 
         packet ack_packet;
-        int ack_length = readWithTimeout(stcp_CB->fd, ack_packet.data, STCP_INITIAL_TIMEOUT);
+        initPacket(&ack_packet, NULL, STCP_MTU);
+        int ack_length = readWithTimeout(stcp_CB->fd, ack_packet.data, STCP_INITIAL_TIMEOUT); 
         if (ack_length < 0) {
             logLog("error", "Timeout waiting for ACK packet");
         } else {
+            ntohHdr(ack_packet.hdr);
             logLog("segment", "Received ACK packet blah blah");
+            dump('r', ack_packet.data, ack_length);
+            // Convert ack number from network to host order if needed:
+            int newly_acked = ack_packet.hdr->ackNo - stcp_CB->last_ack_num;
+            unacked_bytes -= newly_acked;
+            
         }
-
-        unacked_bytes -= ack_packet.hdr->ackNo - next_seq_num;
-        next_seq_num = ack_packet.hdr->ackNo;
 
     }
 
@@ -143,10 +145,9 @@ stcp_send_ctrl_blk * stcp_open(char *destination, int sendersPort,
     cb->fd = fd;
     cb->state = STCP_SENDER_CLOSED;
 
-    unsigned int isn = rand();
-    cb->isn = isn;
+    cb->isn = rand();
     packet syn_packet;
-    createSegment(&syn_packet, SYN, STCP_MAXWIN, isn, 0, NULL, 0);
+    createSegment(&syn_packet, SYN, STCP_MAXWIN, cb->isn, 0, NULL, 0);
     htonHdr(syn_packet.hdr);
 
     
@@ -160,14 +161,16 @@ stcp_send_ctrl_blk * stcp_open(char *destination, int sendersPort,
     cb->state = STCP_SENDER_SYN_SENT;
 
     packet ack_packet;
+    initPacket(&ack_packet, NULL, STCP_MTU);
     int ack_length = readWithTimeout(cb->fd, ack_packet.data, STCP_INITIAL_TIMEOUT);
     if (ack_length < 0) {
         logLog("error", "Timeout waiting for ACK packet");
     } else {
+        ntohHdr(ack_packet.hdr);
         logLog("segment", "Connection Established: Received ACK packet");
+        dump('r', ack_packet.data, ack_length);
+        cb->window_size = ack_packet.hdr->windowSize;
     }
-
-    cb->window_size = ack_packet.hdr->windowSize;
     logLog("init", "Connection established with window size %d", cb->window_size);
     cb->state = STCP_SENDER_ESTABLISHED;
 
