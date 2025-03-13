@@ -74,9 +74,9 @@ int stcp_send(stcp_send_ctrl_blk *stcp_CB, unsigned char* data, int length) {
         while (bytes_sent < length && unacked_bytes < window_size) {
             int chunk_size = min(STCP_MSS, window_size - unacked_bytes);
             packet data_packet;
+            htonHdr(data_packet.hdr);
             createSegment(&data_packet, ACK, window_size, next_seq_num, 0, data + bytes_sent, chunk_size);
             data_packet.hdr->checksum = ipchecksum(data_packet.data, sizeof(tcpheader) + chunk_size);
-            htonHdr(data_packet.hdr);
             logLog("segment", "Sending data packet");
             dump('s', data, length);
             send(stcp_CB->fd, data_packet.data, data_packet.len, 0);
@@ -147,6 +147,9 @@ stcp_send_ctrl_blk * stcp_open(char *destination, int sendersPort,
     cb->isn = isn;
     packet syn_packet;
     createSegment(&syn_packet, SYN, STCP_MAXWIN, isn, 0, NULL, 0);
+    htonHdr(syn_packet.hdr);
+
+    
 
     syn_packet.hdr->checksum = ipchecksum(syn_packet.data, sizeof(tcpheader));
     logLog("segment", "Sending SYN packet");
