@@ -74,7 +74,7 @@ int stcp_send(stcp_send_ctrl_blk *stcp_CB, unsigned char* data, int length) {
         while (bytes_sent < length && local_unacked_bytes < stcp_CB->window_size) {
             int chunk_size = min(STCP_MSS, length - bytes_sent);
             packet data_packet;
-            createDataSegment(&data_packet, ACK, stcp_CB->window_size, stcp_CB->next_seq_num, stcp_CB->last_ack_num, data + bytes_sent, chunk_size);
+            createDataSegment(&data_packet, ACK, stcp_CB->window_size, stcp_CB->next_seq_num, stcp_CB->last_ack_num + 1, data + bytes_sent, chunk_size);
             htonHdr(data_packet.hdr);
             data_packet.hdr->checksum = ipchecksum(data_packet.data, sizeof(tcpheader) + chunk_size);
             logLog("segment", "Sending data packet");
@@ -184,7 +184,7 @@ stcp_send_ctrl_blk * stcp_open(char *destination, int sendersPort,
 
     //three way handshake
     packet ack_packet2;
-    createSegment(&ack_packet2, ACK, cb->window_size, cb->next_seq_num, cb->last_ack_num, NULL, 0);
+    createSegment(&ack_packet2, ACK, cb->window_size, cb->next_seq_num, cb->last_ack_num + 1, NULL, 0);
     htonHdr(ack_packet2.hdr);
     ack_packet2.hdr->checksum = ipchecksum(ack_packet2.data, sizeof(tcpheader));
     logLog("segment", "Sending ACK packet (3-way handshake)");
