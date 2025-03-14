@@ -62,17 +62,16 @@ int stcp_send(stcp_send_ctrl_blk *stcp_CB, unsigned char* data, int length) {
     /* YOUR CODE HERE */
     int bytes_sent = 0;
     // int window_size = stcp_CB->window_size;
-    int unacked_bytes = 0;
-    stcp_CB->next_seq_num = stcp_CB->isn + 1;
+    // int unacked_bytes = 0;
+    int local_unacked_bytes = 0;
 
-    while (bytes_sent < length || unacked_bytes > 0) {
+    while (bytes_sent < length || local_unacked_bytes > 0) {
 
 
-        while (bytes_sent < length && unacked_bytes < stcp_CB->window_size) {
-            int chunk_size = min(STCP_MSS, stcp_CB->window_size - unacked_bytes);
+        while (bytes_sent < length && local_unacked_bytes < stcp_CB->window_size) {
+            int chunk_size = min(STCP_MSS, length - bytes_sent);
             packet data_packet;
-            initPacket(&data_packet, NULL, STCP_MTU);
-            createDataSegment(&data_packet, ACK, stcp_CB->window_size, stcp_CB->next_seq_num, 0, data + bytes_sent, chunk_size);
+            createDataSegment(&data_packet, ACK, stcp_CB->window_size, stcp_CB->next_seq_num, stcp_CB->last_ack_num, data + bytes_sent, chunk_size);
             htonHdr(data_packet.hdr);
             data_packet.hdr->checksum = ipchecksum(data_packet.data, sizeof(tcpheader) + chunk_size);
             logLog("segment", "Sending data packet");
@@ -80,8 +79,9 @@ int stcp_send(stcp_send_ctrl_blk *stcp_CB, unsigned char* data, int length) {
             send(stcp_CB->fd, data_packet.data, data_packet.len, 0);
             bytes_sent += chunk_size;
             stcp_CB->next_seq_num += chunk_size;
-            unacked_bytes += chunk_size;
+            local_unacked_bytes += chunk_size;
         }
+
 
 
         packet ack_packet;
@@ -94,8 +94,12 @@ int stcp_send(stcp_send_ctrl_blk *stcp_CB, unsigned char* data, int length) {
             logLog("segment", "Received ACK packet blah blah");
             dump('r', ack_packet.data, ack_length);
             // Convert ack number from network to host order if needed:
-            int newly_acked = ack_packet.hdr->ackNo - stcp_CB->last_ack_num;
-            unacked_bytes -= newly_acked;
+            
+            
+            unsigned int received_ack = ack_packet.hdr->ackNo;
+            int newly_acked = received_ack - stcp_CB->last_ack_num;
+            stcp_CB->last_ack_num = received_ack;
+            local_unacked_bytes -= newly_acked;
             
         }
 
@@ -144,8 +148,12 @@ stcp_send_ctrl_blk * stcp_open(char *destination, int sendersPort,
 
     cb->fd = fd;
     cb->state = STCP_SENDER_CLOSED;
-
     cb->isn = rand();
+    cb->next_seq_num = cb->isn + 1;
+    cb->last_ack_num = cb->isn; 
+    cb->window_size = STCP_MAXWIN;
+    
+    
     packet syn_packet;
     createSegment(&syn_packet, SYN, STCP_MAXWIN, cb->isn, 0, NULL, 0);
     htonHdr(syn_packet.hdr);
@@ -171,6 +179,17 @@ stcp_send_ctrl_blk * stcp_open(char *destination, int sendersPort,
         dump('r', ack_packet.data, ack_length);
         cb->window_size = ack_packet.hdr->windowSize;
     }
+
+    //complete three way handshake
+    packet ack_packet2;
+    createSegment(&ack_packet2, ACK, cb->window_size, cb->next_seq_num, cb->last_ack_num, NULL, 0);
+    htonHdr(ack_packet2.hdr);
+    ack_packet2.hdr->checksum = ipchecksum(ack_packet2.data, sizeof(tcpheader));
+    logLog("segment", "Sending ACK packet (3-way handshake)");
+    dump('s', ack_packet2.data, ack_packet2.len);
+    send(cb->fd, ack_packet2.data, ack_packet2.len, 0);
+
+
     logLog("init", "Connection established with window size %d", cb->window_size);
     cb->state = STCP_SENDER_ESTABLISHED;
 
