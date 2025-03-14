@@ -88,10 +88,7 @@ void createSegment(packet *pkt, int flags, unsigned short rwnd, unsigned int seq
     hdr->checksum = 0;
 }
 
-void createDataSegment(packet *pkt, int flags, unsigned short rwnd, unsigned int seq, unsigned int ack, unsigned char *data, int len) {
-    createSegment(pkt, flags, rwnd, seq, ack, data, len);
-    memcpy(pkt->data+sizeof(tcpheader), data, len);
-}
+
 
 /*
  * Helper function to read a STCP packet from the network.

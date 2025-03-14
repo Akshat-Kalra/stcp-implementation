@@ -42,6 +42,11 @@ typedef struct {
 } stcp_send_ctrl_blk;
 /* ADD ANY EXTRA FUNCTIONS HERE */
 
+void createDataSegment(packet *pkt, int flags, unsigned short rwnd, unsigned int seq, unsigned int ack, unsigned char *data, int len) {
+    createSegment(pkt, flags, rwnd, seq, ack, data, len);
+    memcpy(pkt->data+sizeof(tcpheader), data, len);
+}
+
 /*
  * Send STCP. This routine is to send all the data (len bytes).  If more
  * than MSS bytes are to be sent, the routine breaks the data into multiple
@@ -61,11 +66,9 @@ int stcp_send(stcp_send_ctrl_blk *stcp_CB, unsigned char* data, int length) {
 
     /* YOUR CODE HERE */
     int bytes_sent = 0;
-    // int window_size = stcp_CB->window_size;
-    // int unacked_bytes = 0;
     int local_unacked_bytes = 0;
 
-    while (bytes_sent < length || local_unacked_bytes > 0) {
+    while (bytes_sent < length) {
 
 
         while (bytes_sent < length && local_unacked_bytes < stcp_CB->window_size) {
@@ -93,7 +96,6 @@ int stcp_send(stcp_send_ctrl_blk *stcp_CB, unsigned char* data, int length) {
             ntohHdr(ack_packet.hdr);
             logLog("segment", "Received ACK packet blah blah");
             dump('r', ack_packet.data, ack_length);
-            // Convert ack number from network to host order if needed:
             
             
             unsigned int received_ack = ack_packet.hdr->ackNo;
@@ -150,7 +152,6 @@ stcp_send_ctrl_blk * stcp_open(char *destination, int sendersPort,
     cb->state = STCP_SENDER_CLOSED;
     cb->isn = rand();
     cb->next_seq_num = cb->isn + 1;
-    cb->last_ack_num = cb->isn; 
     cb->window_size = STCP_MAXWIN;
     
     
@@ -178,9 +179,10 @@ stcp_send_ctrl_blk * stcp_open(char *destination, int sendersPort,
         logLog("segment", "Connection Established: Received ACK packet");
         dump('r', ack_packet.data, ack_length);
         cb->window_size = ack_packet.hdr->windowSize;
+        cb->last_ack_num = ack_packet.hdr->seqNo;
     }
 
-    //complete three way handshake
+    //three way handshake
     packet ack_packet2;
     createSegment(&ack_packet2, ACK, cb->window_size, cb->next_seq_num, cb->last_ack_num, NULL, 0);
     htonHdr(ack_packet2.hdr);
