@@ -14,7 +14,7 @@
  *
  *************************************************************************/
 
-
+// hello
 #include <assert.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -40,12 +40,108 @@ typedef struct {
     unsigned short window_size;
 
 } stcp_send_ctrl_blk;
+
+// linked list node for outstanding packets
+typedef struct packet_node {
+    packet pkt;
+    unsigned int seq;
+    int retransmission_count;
+    unsigned long sent_time;
+    struct packet_node *next;
+} packet_node;
+
+packet_node *outstanding_head = NULL;
+
+
+
 /* ADD ANY EXTRA FUNCTIONS HERE */
+
+unsigned long get_current_time() {
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return tv.tv_sec * 1000UL + tv.tv_usec / 1000UL;
+}
 
 void createDataSegment(packet *pkt, int flags, unsigned short rwnd, unsigned int seq, unsigned int ack, unsigned char *data, int len) {
     createSegment(pkt, flags, rwnd, seq, ack, data, len);
     memcpy(pkt->data+sizeof(tcpheader), data, len);
 }
+
+void addOutstanding(packet_node **head, const packet *pkt, unsigned int seq, unsigned long sent_time) {
+    packet_node *new_node = malloc(sizeof(packet_node));
+    if (new_node == NULL) {
+        perror("malloc");
+        return;
+    }
+    new_node->pkt = *pkt;
+    new_node->seq = seq;
+    new_node->sent_time = sent_time;
+    new_node->retransmission_count = 0;
+    new_node->next = NULL;
+    
+    if (*head == NULL) {
+        *head = new_node;
+    } else {
+        packet_node *current = *head;
+        while (current->next != NULL)
+            current = current->next;
+        current->next = new_node;
+}
+}
+
+
+void removeOutstanding(packet_node **head, unsigned int ack) {
+    while (*head != NULL && (*head)->seq < ack) {
+        packet_node *temp = *head;
+        *head = (*head)->next;
+        free(temp);
+    }
+    
+    packet_node *current = *head;
+    while (current != NULL && current->next != NULL) {
+        if (current->next->seq < ack) {
+            packet_node *temp = current->next;
+            current->next = current->next->next;
+            free(temp);
+        } else {
+            current = current->next;
+        }
+    }
+}
+
+void checkAndRetransmit(packet_node **head, int fd) {
+    unsigned long now = get_current_time();
+    packet_node *node = *head;
+    while (node != NULL) {
+        int timeout;
+
+        if (node->retransmission_count == 0)
+            timeout = 1000;
+        else if (node->retransmission_count == 1)
+            timeout = 2000;
+        else
+            timeout = 4000;
+        
+        if (now - node->sent_time >= timeout) {
+            
+            logLog("segment", "Retransmitting data packet");
+            send(fd, node->pkt.data, node->pkt.len, 0);
+            
+            node->sent_time = now;
+            node->retransmission_count++;
+        }
+        node = node->next;
+    }
+}
+
+void freeOutstandingList(packet_node **head) {
+    while (*head != NULL) {
+        packet_node *temp = *head;
+        *head = (*head)->next;
+        free(temp);
+    }
+}
+
 
 /*
  * Send STCP. This routine is to send all the data (len bytes).  If more
@@ -65,18 +161,16 @@ void createDataSegment(packet *pkt, int flags, unsigned short rwnd, unsigned int
 int stcp_send(stcp_send_ctrl_blk *stcp_CB, unsigned char* data, int length) {
 
     /* YOUR CODE HERE */
+
+    nonblock(stcp_CB->fd);
     int bytes_sent = 0;
     // int local_unacked_bytes = 0;
 
+    
+    int local_unacked_bytes = 0;
+    while (bytes_sent < length || local_unacked_bytes > 0) {
 
-    // while there is still data to send
-    while (bytes_sent < length) {
-
-        int local_unacked_bytes = 0;
-
-        // while there is still data to send and the window is not full
         while (bytes_sent < length && local_unacked_bytes < stcp_CB->window_size) {
-
             int chunk_size = min(STCP_MSS, length - bytes_sent);
             packet data_packet;
             createDataSegment(&data_packet, ACK, stcp_CB->window_size, stcp_CB->next_seq_num, stcp_CB->last_ack_num + 1, data + bytes_sent, chunk_size);
@@ -86,39 +180,57 @@ int stcp_send(stcp_send_ctrl_blk *stcp_CB, unsigned char* data, int length) {
 
             logLog("segment", "Sending data packet");
 
+            ntohHdr(data_packet.hdr);
             dump('s', data_packet.data, data_packet.len);
+            htonHdr(data_packet.hdr);
 
             if (send(stcp_CB->fd, data_packet.data, data_packet.len, 0) < 0) {
                 logPerror("send");
                 return STCP_ERROR;
             }
 
+            addOutstanding(&outstanding_head, &data_packet, stcp_CB->next_seq_num, get_current_time());
             bytes_sent += chunk_size;
             stcp_CB->next_seq_num += chunk_size;
             local_unacked_bytes += chunk_size;
+
         }
 
-
-
         packet ack_packet;
-        // initialize ack_packet
         initPacket(&ack_packet, NULL, STCP_MTU);
+        int ack_length = readWithTimeout(stcp_CB->fd, ack_packet.data, STCP_INITIAL_TIMEOUT);
+        if (ack_length > 0) {
 
-        // reading ack_packet
-        int ack_length = readWithTimeout(stcp_CB->fd, ack_packet.data, STCP_INITIAL_TIMEOUT); 
-        if (ack_length < 0) {
-            logLog("error", "Timeout waiting for ACK packet");
-        } else {
             ntohHdr(ack_packet.hdr);
-            logLog("segment", "Received ACK packet blah blah");
+            logLog("segment", "Received ACK packet");
             dump('r', ack_packet.data, ack_length);
+            unsigned int received_ack = ack_packet.hdr->ackNo;
+
+            int newly_acked = received_ack - stcp_CB->last_ack_num;
+            stcp_CB->last_ack_num = received_ack;
+
+            local_unacked_bytes -= newly_acked;
             
-            
+
+
+            removeOutstanding(&outstanding_head, received_ack);
+        } else if (ack_length == STCP_READ_TIMED_OUT) {
+            logLog("error", "Timeout waiting for ACK packet");
+            checkAndRetransmit(&outstanding_head, stcp_CB->fd); 
+        } else {
+            logPerror("readWithTimeout");
+            return STCP_ERROR;
+        }
+
+        while ((ack_length = readWithTimeout(stcp_CB->fd, ack_packet.data, 0)) > 0) {
+            ntohHdr(ack_packet.hdr);
+            logLog("segment", "Draining ACK packet");
+            dump('r', ack_packet.data, ack_length);
             unsigned int received_ack = ack_packet.hdr->ackNo;
             int newly_acked = received_ack - stcp_CB->last_ack_num;
             stcp_CB->last_ack_num = received_ack;
             local_unacked_bytes -= newly_acked;
-            
+            removeOutstanding(&outstanding_head, received_ack);
         }
 
     }
@@ -187,6 +299,9 @@ stcp_send_ctrl_blk * stcp_open(char *destination, int sendersPort,
 
     syn_packet.hdr->checksum = ipchecksum(syn_packet.data, sizeof(tcpheader));
     logLog("segment", "Sending SYN packet");
+    ntohHdr(syn_packet.hdr);
+    dump('s', syn_packet.data, syn_packet.len);
+    htonHdr(syn_packet.hdr);
 
     
     if (send(cb->fd, syn_packet.data, syn_packet.len, 0) < 0) {
@@ -198,16 +313,28 @@ stcp_send_ctrl_blk * stcp_open(char *destination, int sendersPort,
 
     packet ack_packet;
     initPacket(&ack_packet, NULL, STCP_MTU);
-    int ack_length = readWithTimeout(cb->fd, ack_packet.data, STCP_INITIAL_TIMEOUT);
-    if (ack_length < 0) {
+    int ack_length;
+    ack_length = readWithTimeout(cb->fd, ack_packet.data, STCP_INITIAL_TIMEOUT);
+    while (ack_length < 0) {
+
+        // retransmit syn packet
         logLog("error", "Timeout waiting for ACK packet");
-    } else {
-        ntohHdr(ack_packet.hdr);
-        logLog("segment", "Connection Established: Received ACK packet");
-        dump('r', ack_packet.data, ack_length);
-        cb->window_size = ack_packet.hdr->windowSize;
-        cb->last_ack_num = ack_packet.hdr->seqNo;
+        logLog("segment", "Retransmitting SYN packet");
+        if (send(cb->fd, syn_packet.data, syn_packet.len, 0) < 0) {
+            logPerror("send");
+            return NULL;
+        }
+        ntohHdr(syn_packet.hdr);
+        dump('s', syn_packet.data, syn_packet.len);
+        htonHdr(syn_packet.hdr);
+
     }
+    ntohHdr(ack_packet.hdr);
+    logLog("segment", "Connection Established: Received ACK packet");
+    dump('r', ack_packet.data, ack_length);
+    cb->window_size = ack_packet.hdr->windowSize;
+    cb->last_ack_num = ack_packet.hdr->seqNo;
+
 
     //three way handshake
     packet ack_packet2;
@@ -215,7 +342,9 @@ stcp_send_ctrl_blk * stcp_open(char *destination, int sendersPort,
     htonHdr(ack_packet2.hdr);
     ack_packet2.hdr->checksum = ipchecksum(ack_packet2.data, sizeof(tcpheader));
     logLog("segment", "Sending ACK packet (3-way handshake)");
+    ntohHdr(ack_packet2.hdr);
     dump('s', ack_packet2.data, ack_packet2.len);
+    htonHdr(ack_packet2.hdr);
     if (send(cb->fd, ack_packet2.data, ack_packet2.len, 0) < 0) {
         logPerror("send");
         return NULL;
@@ -224,6 +353,9 @@ stcp_send_ctrl_blk * stcp_open(char *destination, int sendersPort,
 
     logLog("init", "Connection established with window size %d", cb->window_size);
     cb->state = STCP_SENDER_ESTABLISHED;
+    
+
+
 
 
     return cb;
@@ -246,6 +378,8 @@ stcp_send_ctrl_blk * stcp_open(char *destination, int sendersPort,
 int stcp_close(stcp_send_ctrl_blk *cb) {
     /* YOUR CODE HERE */
 
+    cb->state = STCP_SENDER_CLOSING;
+
     packet fin_packet;
     createSegment(&fin_packet, FIN, cb->window_size, cb->next_seq_num, cb->last_ack_num + 1, NULL, 0);
     htonHdr(fin_packet.hdr);
@@ -257,7 +391,7 @@ int stcp_close(stcp_send_ctrl_blk *cb) {
         return STCP_ERROR;
     }
 
-    cb->state = STCP_SENDER_CLOSING;
+    cb->state = STCP_SENDER_FIN_WAIT;
 
     packet ack_packet;
     initPacket(&ack_packet, NULL, STCP_MTU);
@@ -267,10 +401,17 @@ int stcp_close(stcp_send_ctrl_blk *cb) {
     } else {
         ntohHdr(ack_packet.hdr);
         logLog("segment", "Received ACK packet");
-        dump('r', ack_packet.data, ack_length);
+        // dump('r', ack_packet.data, ack_length);
         cb->window_size = ack_packet.hdr->windowSize;
         cb->last_ack_num = ack_packet.hdr->seqNo;
+        cb->state = STCP_SENDER_CLOSED;
     }
+
+    freeOutstandingList(&outstanding_head);
+    
+    close(cb->fd);
+    
+    free(cb);
     
     
     return STCP_SUCCESS;
@@ -305,7 +446,7 @@ int main(int argc, char **argv) {
     unsigned char buffer[STCP_MSS];
     int num_read_bytes;
 
-    logConfig("sender", "init,segment,error,failure");
+    logConfig("sender", "init,segment,error,failure,packet");
     /* Verify that the arguments are right */
     if (argc > 5 || argc == 1) {
         fprintf(stderr, "usage: sender DestinationIPAddress/Name receiveDataOnPort sendDataToPort filename\n");
@@ -337,6 +478,9 @@ int main(int argc, char **argv) {
     cb = stcp_open(destinationHost, sendersPort, receiversPort);
     if (cb == NULL) {
         /* YOUR CODE HERE */
+        logPerror("stcp_open");
+        close(file);
+        exit(1);
     }
 
     /* Start to send data in file via STCP to remote receiver. Chop up
@@ -352,12 +496,18 @@ int main(int argc, char **argv) {
 
         if (stcp_send(cb, buffer, num_read_bytes) == STCP_ERROR) {
             /* YOUR CODE HERE */
+            logPerror("stcp_send");
+            close(file);
+            exit(1);
         }
     }
 
     /* Close the connection to remote receiver */
     if (stcp_close(cb) == STCP_ERROR) {
         /* YOUR CODE HERE */
+        logPerror("stcp_close");
+        close(file);
+        exit(1);
     }
 
     return 0;

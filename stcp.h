@@ -63,6 +63,7 @@ extern unsigned int hostname_to_ipaddr(const char *s);
 extern int readWithTimeout(int fd, unsigned char *pkt, int ms);
 extern unsigned short ipchecksum(void *data, int len);
 extern int udp_open(char *remote_IP_str, int remote_port, int local_port);
+void nonblock(int fd);
 
 #include "wraparound.h"
 
