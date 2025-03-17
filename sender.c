@@ -490,6 +490,25 @@ stcp_send_ctrl_blk * stcp_open(char *destination, int sendersPort,
 int stcp_close(stcp_send_ctrl_blk *cb) {
     /* YOUR CODE HERE */
 
+    while (outstanding_head != NULL) {
+        logLog("close", "Outstanding data still pending. Retransmitting...");
+        checkAndRetransmit(&outstanding_head, cb->fd);
+        
+        packet drain_ack;
+        initPacket(&drain_ack, NULL, STCP_MTU);
+        int drain_length;
+        while ((drain_length = readWithTimeout(cb->fd, drain_ack.data, 0)) > 0) {
+            if (!verifyPacketIntegrity(&drain_ack, drain_length)) {
+                logLog("error", "Checksum mismatch in drain ACK packet; ignoring");
+                continue;
+            }
+            ntohHdr(drain_ack.hdr);
+            unsigned int received_ack = drain_ack.hdr->ackNo;
+            removeOutstanding(&outstanding_head, received_ack);
+        }
+    }
+
+
     packet fin_packet;
     createSegment(&fin_packet, FIN, cb->window_size, cb->next_seq_num, cb->last_ack_num + 1, NULL, 0);
     htonHdr(fin_packet.hdr);
@@ -508,8 +527,10 @@ int stcp_close(stcp_send_ctrl_blk *cb) {
     initPacket(&ack_packet, NULL, STCP_MTU);
     // int ack_length = readWithTimeout(cb->fd, ack_packet.data, STCP_INITIAL_TIMEOUT);
     int ack_length;
-    while ((ack_length = readWithTimeout(cb->fd, ack_packet.data, STCP_INITIAL_TIMEOUT)) < 0) {
-        if (ack_length == STCP_READ_PERMANENT_FAILURE) {
+    while (1) {
+        ack_length = readWithTimeout(cb->fd, ack_packet.data, STCP_INITIAL_TIMEOUT);
+        if (ack_length < 0) {
+            if (ack_length == STCP_READ_PERMANENT_FAILURE) {
             logLog("error", "Permanent failure reading ACK packet");
             return STCP_ERROR;
         }
@@ -518,27 +539,33 @@ int stcp_close(stcp_send_ctrl_blk *cb) {
         logLog("segment", "Retransmitting FIN packet");
         
         checkAndRetransmit(&outstanding_head, cb->fd);
+        } else {
+            if (!verifyPacketIntegrity(&ack_packet, ack_length) && ack_packet.hdr->flags != FIN) {
+                logLog("error", "Checksum mismatch in ACK packet");
+                continue;
+            } else {
+                ntohHdr(ack_packet.hdr);
+                logLog("segment", "Received ACK packet");
+                dump('r', ack_packet.data, ack_length);
+                cb->window_size = ack_packet.hdr->windowSize;
+                cb->last_ack_num = ack_packet.hdr->seqNo;
+                break;
+            }
+        }
     }
 
-    ntohHdr(ack_packet.hdr);
-    logLog("segment", "Received ACK packet");
-    dump('r', ack_packet.data, ack_length);
-    cb->window_size = ack_packet.hdr->windowSize;
-    cb->last_ack_num = ack_packet.hdr->seqNo;
 
+    // ntohHdr(ack_packet.hdr);
+    // logLog("segment", "Received ACK packet");
+    // dump('r', ack_packet.data, ack_length);
+    // cb->window_size = ack_packet.hdr->windowSize;
+    // cb->last_ack_num = ack_packet.hdr->seqNo;
 
+    logLog("init", "Connection closed");
     cb->state = STCP_SENDER_CLOSED;
-
-    // if (ack_length < 0) {
-    //     logLog("error", "Timeout waiting for ACK packet");
-    // } else {
-    //     ntohHdr(ack_packet.hdr);
-    //     logLog("segment", "Received ACK packet");
-    //     dump('r', ack_packet.data, ack_length);
-    //     cb->window_size = ack_packet.hdr->windowSize;
-    //     cb->last_ack_num = ack_packet.hdr->seqNo;
-    // }
-    
+    freeOutstandingList(&outstanding_head);
+    close(cb->fd);
+    free(cb);
     
     return STCP_SUCCESS;
 }
@@ -569,7 +596,7 @@ int main(int argc, char **argv) {
     /* You might want to change the size of this buffer to test how your
      * code deals with different packet sizes.
      */
-    unsigned char buffer[STCP_MSS];
+    unsigned char buffer[65535];
     int num_read_bytes;
 
     logConfig("sender", "init,segment,error,failure");
@@ -604,6 +631,9 @@ int main(int argc, char **argv) {
     cb = stcp_open(destinationHost, sendersPort, receiversPort);
     if (cb == NULL) {
         /* YOUR CODE HERE */
+        logPerror("Failed to open connection");
+        close(file);
+        exit(1);
     }
 
     /* Start to send data in file via STCP to remote receiver. Chop up
@@ -619,13 +649,20 @@ int main(int argc, char **argv) {
 
         if (stcp_send(cb, buffer, num_read_bytes) == STCP_ERROR) {
             /* YOUR CODE HERE */
+            logPerror("Failed to send data");
+            close(file);
+            exit(1);
         }
     }
 
     /* Close the connection to remote receiver */
     if (stcp_close(cb) == STCP_ERROR) {
         /* YOUR CODE HERE */
+        logPerror("Failed to close connection");
+        close(file);
+        exit(1);
     }
 
+    close(file);
     return 0;
 }
