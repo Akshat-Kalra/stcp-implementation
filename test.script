@@ -1,0 +1,2 @@
+// Set all the probabilities to .2 except corruption
+corrupt out ack 50%

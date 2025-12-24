@@ -1,0 +1,33 @@
+# Compiled object files
+*.o
+
+# Executables
+sender
+receiver
+testtcp
+testwraparound
+waitForPorts
+
+# Platform-specific receiver binaries
+receiver_linux
+receiver_mac_apple
+receiver_mac_intel
+
+# Debug symbols
+*.dSYM/
+
+# Test output files
+OutputFile
+smallfile
+
+# macOS system files
+.DS_Store
+
+# Editor directories
+.vscode/
+.idea/
+
+# Other temporary files
+*.swp
+*.swo
+*~
